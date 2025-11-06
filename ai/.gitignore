@@ -9,6 +9,10 @@ venv/
 ENV/
 .venv
 
+# Flutter/Dart (not needed in backend branch)
+.dart_tool/
+build/
+
 # IDE
 .vscode/
 .idea/
