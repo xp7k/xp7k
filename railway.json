@@ -18,7 +18,8 @@
       "name": "ai",
       "source": "./ai",
       "build": {
-        "builder": "DOCKERFILE"
+        "builder": "DOCKERFILE",
+        "dockerfilePath": "Dockerfile"
       },
       "deploy": {
         "restartPolicyType": "ON_FAILURE",
