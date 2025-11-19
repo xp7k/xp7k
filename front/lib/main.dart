@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:math' as math;
 import 'analytics.dart';
 
 class DiagonalLinePainter extends CustomPainter {
@@ -27,33 +28,59 @@ class DiagonalLinePainter extends CustomPainter {
 
     if (points.isEmpty) return;
 
-    // Start the path
-    path.moveTo(0, size.height - (points[0] * size.height));
+    // Calculate step size to ensure all points are distributed across full width
+    // Always use full width regardless of number of points
+    final pointCount = points.length;
+    final stepSize = pointCount > 1 ? size.width / (pointCount - 1) : 0.0;
 
-    // Create smooth curve through all points using cubic bezier
-    for (int i = 1; i < points.length; i++) {
-      final x = (i / (points.length - 1)) * size.width;
-      final y = size.height - (points[i] * size.height);
+    // Start the path at the first point (x=0, always)
+    // Y coordinate: higher normalized values (maxPrice = 1.0) should be at top (y=0)
+    // Lower normalized values (minPrice = 0.0) should be at bottom (y=height)
+    // So we invert: y = height - (normalizedValue * height)
+    final startY = size.height - (points[0] * size.height);
+    path.moveTo(0, startY);
 
-      if (i == 1) {
-        // First segment: use quadratic curve
-        final controlX = x * 0.5;
-        final controlY = size.height -
-            (points[0] * size.height) * 0.7 -
-            (points[i] * size.height) * 0.3;
-        path.quadraticBezierTo(controlX, controlY, x, y);
-      } else {
-        // Subsequent segments: use cubic bezier for smooth transitions
-        final prevX = ((i - 1) / (points.length - 1)) * size.width;
-        final prevY = size.height - (points[i - 1] * size.height);
+    // Handle single point case - draw a horizontal line
+    if (pointCount == 1) {
+      path.lineTo(size.width, startY);
+    } else {
+      // Create smooth curve through all points using cubic bezier
+      // Always distribute all points across the full width
+      for (int i = 1; i < pointCount; i++) {
+        // Calculate x position: always span from 0 to full width
+        final x = i * stepSize;
+        // Invert Y so higher values appear at top
+        final y = size.height - (points[i] * size.height);
 
-        // Control points for smooth curve
-        final cp1X = prevX + (x - prevX) * 0.3;
-        final cp1Y = prevY;
-        final cp2X = prevX + (x - prevX) * 0.7;
-        final cp2Y = y;
+        if (i == 1) {
+          // First segment: use quadratic curve
+          final controlX = x * 0.5;
+          final controlY = size.height -
+              (points[0] * size.height) * 0.7 -
+              (points[i] * size.height) * 0.3;
+          path.quadraticBezierTo(controlX, controlY, x, y);
+        } else {
+          // Subsequent segments: use cubic bezier for smooth transitions
+          final prevX = (i - 1) * stepSize;
+          final prevY = size.height - (points[i - 1] * size.height);
 
-        path.cubicTo(cp1X, cp1Y, cp2X, cp2Y, x, y);
+          // Control points for smooth curve
+          final cp1X = prevX + (x - prevX) * 0.3;
+          final cp1Y = prevY;
+          final cp2X = prevX + (x - prevX) * 0.7;
+          final cp2Y = y;
+
+          path.cubicTo(cp1X, cp1Y, cp2X, cp2Y, x, y);
+        }
+      }
+
+      // Ensure the last point reaches the full width
+      if (pointCount > 1) {
+        final lastX = (pointCount - 1) * stepSize;
+        if (lastX < size.width) {
+          final lastY = size.height - (points[pointCount - 1] * size.height);
+          path.lineTo(size.width, lastY);
+        }
       }
     }
 
@@ -221,6 +248,166 @@ class _HomePageState extends State<HomePage> {
   bool _isFocused = false;
   bool _isTappingSuggestion = false;
 
+  // Chart data
+  List<double>? _chartDataPoints;
+  bool _isLoadingChart = true;
+  String _selectedResolution = 'min1'; // Default: min1 (m)
+  double? _chartMinPrice;
+  double? _chartMaxPrice;
+  DateTime? _chartFirstTimestamp;
+  DateTime? _chartLastTimestamp;
+
+  // TON address for default pair
+  static const String _tonAddress =
+      '0:0000000000000000000000000000000000000000000000000000000000000000';
+  static const String _chartApiUrl = 'https://api.dyor.io';
+
+  // Resolution mapping: button -> API value
+  static const Map<String, String> _resolutionMap = {
+    'd': 'day1',
+    'h': 'hour1',
+    'q': 'min15',
+    'm': 'min1',
+  };
+
+  // Maximum time ranges for each resolution (in days)
+  static const Map<String, int> _maxTimeRanges = {
+    'day1': 365, // 365 days
+    'hour1': 30, // 30 days
+    'min15': 7, // 7 days
+    'min1': 1, // 24 hours = 1 day
+  };
+
+  /// Calculate the time range for the selected resolution
+  /// Returns a map with 'from' and 'to' as ISO 8601 strings
+  Map<String, String> _getTimeRange() {
+    final now = DateTime.now().toUtc();
+    final maxDays = _maxTimeRanges[_selectedResolution] ?? 30;
+
+    // Calculate 'from' date: maxDays ago
+    final from = now.subtract(Duration(days: maxDays));
+
+    return {
+      'from': from.toIso8601String(),
+      'to': now.toIso8601String(),
+    };
+  }
+
+  /// Format price value for display (up to 5 decimal places, removing trailing zeros)
+  String _formatPrice(double price) {
+    // Format to 5 decimal places
+    final formatted = price.toStringAsFixed(5);
+    // Remove trailing zeros
+    if (formatted.contains('.')) {
+      return formatted
+          .replaceAll(RegExp(r'0+$'), '')
+          .replaceAll(RegExp(r'\.$'), '');
+    }
+    return formatted;
+  }
+
+  /// Format timestamp based on resolution
+  String _formatTimestamp(DateTime timestamp) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final yesterday = today.subtract(const Duration(days: 1));
+    final timestampDate =
+        DateTime(timestamp.year, timestamp.month, timestamp.day);
+
+    switch (_selectedResolution) {
+      case 'day1': // d: DD/MM/YY
+        return '${timestamp.day.toString().padLeft(2, '0')}/${timestamp.month.toString().padLeft(2, '0')}/${timestamp.year.toString().substring(2)}';
+
+      case 'hour1': // h: DD/MM
+        return '${timestamp.day.toString().padLeft(2, '0')}/${timestamp.month.toString().padLeft(2, '0')}';
+
+      case 'min15': // q: MM/YY 22:19
+        return '${timestamp.month.toString().padLeft(2, '0')}/${timestamp.year.toString().substring(2)} ${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}';
+
+      case 'min1': // m: 22:19, yesterday or 22:19, today
+        final timeStr =
+            '${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}';
+        if (timestampDate == today) {
+          return '$timeStr, today';
+        } else if (timestampDate == yesterday) {
+          return '$timeStr, yesterday';
+        } else {
+          // Fallback to date if not today or yesterday
+          return '$timeStr, ${timestamp.day.toString().padLeft(2, '0')}/${timestamp.month.toString().padLeft(2, '0')}';
+        }
+
+      default:
+        return timestamp.toString();
+    }
+  }
+
+  /// Build timestamp widget with proper styling for min1 resolution
+  Widget _buildTimestampWidget(DateTime? timestamp) {
+    if (timestamp == null) {
+      return const Text(
+        "--/--",
+        style: TextStyle(
+          fontSize: 10,
+          color: Color(0xFF818181),
+        ),
+      );
+    }
+
+    // For min1 resolution, use RichText to style "Today"/"Yesterday" with regular font weight
+    if (_selectedResolution == 'min1') {
+      final now = DateTime.now();
+      final today = DateTime(now.year, now.month, now.day);
+      final yesterday = today.subtract(const Duration(days: 1));
+      final timestampDate =
+          DateTime(timestamp.year, timestamp.month, timestamp.day);
+      final timeStr =
+          '${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}';
+
+      if (timestampDate == today) {
+        return RichText(
+          text: TextSpan(
+            style: const TextStyle(
+              fontSize: 10,
+              color: Color(0xFF818181),
+            ),
+            children: [
+              TextSpan(text: timeStr),
+              const TextSpan(
+                text: ', today',
+                style: TextStyle(fontWeight: FontWeight.normal),
+              ),
+            ],
+          ),
+        );
+      } else if (timestampDate == yesterday) {
+        return RichText(
+          text: TextSpan(
+            style: const TextStyle(
+              fontSize: 10,
+              color: Color(0xFF818181),
+            ),
+            children: [
+              TextSpan(text: timeStr),
+              const TextSpan(
+                text: ', yesterday',
+                style: TextStyle(fontWeight: FontWeight.normal),
+              ),
+            ],
+          ),
+        );
+      }
+    }
+
+    // For other resolutions, use regular Text
+    return Text(
+      _formatTimestamp(timestamp),
+      style: const TextStyle(
+        fontSize: 10,
+        color: Color(0xFF818181),
+      ),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -251,6 +438,153 @@ class _HomePageState extends State<HomePage> {
       }
       setState(() {});
     });
+
+    // Fetch chart data on page load
+    _fetchChartData();
+  }
+
+  Future<void> _fetchChartData() async {
+    setState(() {
+      _isLoadingChart = true;
+    });
+
+    try {
+      // Get time range for the selected resolution
+      final timeRange = _getTimeRange();
+
+      // Build API URL with query parameters
+      // Using selected resolution, USD currency, and max time range
+      final uri = Uri.parse('$_chartApiUrl/v1/jettons/$_tonAddress/price/chart')
+          .replace(queryParameters: {
+        'resolution': _selectedResolution,
+        'currency': 'usd',
+        'from': timeRange['from']!,
+        'to': timeRange['to']!,
+      });
+
+      final response = await http.get(uri);
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final points = data['points'] as List<dynamic>?;
+
+        if (points != null && points.isNotEmpty) {
+          // Extract timestamp from the first point (oldest after reversal)
+          // API returns newest-first, so last point is oldest, first point is newest
+          final firstPoint = points[points.length - 1];
+          final lastPoint = points[0];
+
+          final firstTimeStr = firstPoint['time'] as String?;
+          final lastTimeStr = lastPoint['time'] as String?;
+
+          DateTime? firstTimestamp;
+          DateTime? lastTimestamp;
+
+          if (firstTimeStr != null) {
+            try {
+              firstTimestamp = DateTime.parse(firstTimeStr).toLocal();
+            } catch (e) {
+              print('Error parsing first timestamp: $e');
+            }
+          }
+
+          if (lastTimeStr != null) {
+            try {
+              lastTimestamp = DateTime.parse(lastTimeStr).toLocal();
+            } catch (e) {
+              print('Error parsing last timestamp: $e');
+            }
+          }
+
+          // Extract and convert price values
+          var prices = points.map((point) {
+            final valueObj = point['value'];
+            final valueStr = valueObj['value'] as String;
+            final decimals = valueObj['decimals'] as int;
+
+            // Convert to real value: value * 10^(-decimals)
+            final value = int.parse(valueStr);
+            final realValue = value * math.pow(10, -decimals);
+            return realValue.toDouble();
+          }).toList();
+
+          // Reverse the array - API likely returns newest-first, but we need oldest-first for chart
+          prices = prices.reversed.toList();
+
+          // Normalize prices to 0.0-1.0 range for chart display
+          if (prices.isNotEmpty) {
+            final minPrice = prices.reduce(math.min);
+            final maxPrice = prices.reduce(math.max);
+            final range = maxPrice - minPrice;
+
+            if (range > 0) {
+              // Normalize prices to 0.0-1.0 range for chart display
+              // minPrice -> 0.0, maxPrice -> 1.0
+              final normalizedPoints = prices.map((price) {
+                return (price - minPrice) / range;
+              }).toList();
+
+              setState(() {
+                _chartDataPoints = normalizedPoints;
+                _chartMinPrice = minPrice;
+                _chartMaxPrice = maxPrice;
+                _chartFirstTimestamp = firstTimestamp;
+                _chartLastTimestamp = lastTimestamp;
+                _isLoadingChart = false;
+              });
+            } else {
+              // All prices are the same, set to middle
+              setState(() {
+                _chartDataPoints = List.filled(prices.length, 0.5);
+                _chartMinPrice = minPrice;
+                _chartMaxPrice = maxPrice;
+                _chartFirstTimestamp = firstTimestamp;
+                _chartLastTimestamp = lastTimestamp;
+                _isLoadingChart = false;
+              });
+            }
+          } else {
+            setState(() {
+              _chartDataPoints = null;
+              _chartMinPrice = null;
+              _chartMaxPrice = null;
+              _chartFirstTimestamp = null;
+              _chartLastTimestamp = null;
+              _isLoadingChart = false;
+            });
+          }
+        } else {
+          setState(() {
+            _chartDataPoints = null;
+            _chartMinPrice = null;
+            _chartMaxPrice = null;
+            _chartFirstTimestamp = null;
+            _chartLastTimestamp = null;
+            _isLoadingChart = false;
+          });
+        }
+      } else {
+        setState(() {
+          _chartDataPoints = null;
+          _chartMinPrice = null;
+          _chartMaxPrice = null;
+          _chartFirstTimestamp = null;
+          _chartLastTimestamp = null;
+          _isLoadingChart = false;
+        });
+        print('Chart fetch failed: ${response.statusCode}');
+      }
+    } catch (e) {
+      setState(() {
+        _chartDataPoints = null;
+        _chartMinPrice = null;
+        _chartMaxPrice = null;
+        _chartFirstTimestamp = null;
+        _chartLastTimestamp = null;
+        _isLoadingChart = false;
+      });
+      print('Chart fetch error: $e');
+    }
   }
 
   @override
@@ -416,10 +750,10 @@ class _HomePageState extends State<HomePage> {
                               width: double.infinity,
                               child: Column(
                                 children: [
-                                  const Stack(
+                                  Stack(
                                     alignment: Alignment.center,
                                     children: [
-                                      Row(
+                                      const Row(
                                         mainAxisAlignment:
                                             MainAxisAlignment.spaceBetween,
                                         children: [
@@ -443,18 +777,103 @@ class _HomePageState extends State<HomePage> {
                                       Row(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          Text("d"),
-                                          SizedBox(width: 15),
-                                          Text("h"),
-                                          SizedBox(width: 15),
-                                          Text("q"),
-                                          SizedBox(width: 15),
-                                          Text(
-                                            "m",
-                                            style: TextStyle(
-                                              fontWeight: FontWeight.w300,
-                                              color: Color(0xFF818181),
-                                              fontSize: 15,
+                                          GestureDetector(
+                                            onTap: () {
+                                              setState(() {
+                                                _selectedResolution =
+                                                    _resolutionMap['m']!;
+                                              });
+                                              _fetchChartData();
+                                            },
+                                            child: Text(
+                                              "m",
+                                              style: TextStyle(
+                                                fontWeight:
+                                                    _selectedResolution ==
+                                                            _resolutionMap['m']
+                                                        ? FontWeight.normal
+                                                        : FontWeight.w500,
+                                                color: _selectedResolution ==
+                                                        _resolutionMap['m']
+                                                    ? const Color(0xFF818181)
+                                                    : const Color(0xFFE4E4E4),
+                                                fontSize: 15,
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 15),
+                                          GestureDetector(
+                                            onTap: () {
+                                              setState(() {
+                                                _selectedResolution =
+                                                    _resolutionMap['q']!;
+                                              });
+                                              _fetchChartData();
+                                            },
+                                            child: Text(
+                                              "q",
+                                              style: TextStyle(
+                                                fontWeight:
+                                                    _selectedResolution ==
+                                                            _resolutionMap['q']
+                                                        ? FontWeight.normal
+                                                        : FontWeight.w500,
+                                                color: _selectedResolution ==
+                                                        _resolutionMap['q']
+                                                    ? const Color(0xFF818181)
+                                                    : const Color(0xFFE4E4E4),
+                                                fontSize: 15,
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 15),
+                                          GestureDetector(
+                                            onTap: () {
+                                              setState(() {
+                                                _selectedResolution =
+                                                    _resolutionMap['h']!;
+                                              });
+                                              _fetchChartData();
+                                            },
+                                            child: Text(
+                                              "h",
+                                              style: TextStyle(
+                                                fontWeight:
+                                                    _selectedResolution ==
+                                                            _resolutionMap['h']
+                                                        ? FontWeight.normal
+                                                        : FontWeight.w500,
+                                                color: _selectedResolution ==
+                                                        _resolutionMap['h']
+                                                    ? const Color(0xFF818181)
+                                                    : const Color(0xFFE4E4E4),
+                                                fontSize: 15,
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 15),
+                                          GestureDetector(
+                                            onTap: () {
+                                              setState(() {
+                                                _selectedResolution =
+                                                    _resolutionMap['d']!;
+                                              });
+                                              _fetchChartData();
+                                            },
+                                            child: Text(
+                                              "d",
+                                              style: TextStyle(
+                                                fontWeight:
+                                                    _selectedResolution ==
+                                                            _resolutionMap['d']
+                                                        ? FontWeight.normal
+                                                        : FontWeight.w500,
+                                                color: _selectedResolution ==
+                                                        _resolutionMap['d']
+                                                    ? const Color(0xFF818181)
+                                                    : const Color(0xFFE4E4E4),
+                                                fontSize: 15,
+                                              ),
                                             ),
                                           ),
                                         ],
@@ -615,56 +1034,74 @@ class _HomePageState extends State<HomePage> {
                                             children: [
                                               Expanded(
                                                 child: SizedBox.expand(
-                                                  child: CustomPaint(
-                                                    painter:
-                                                        DiagonalLinePainter(),
-                                                  ),
+                                                  child: _isLoadingChart
+                                                      ? const Center(
+                                                          child: SizedBox(
+                                                            width: 20,
+                                                            height: 20,
+                                                            child:
+                                                                CircularProgressIndicator(
+                                                              strokeWidth: 2,
+                                                              valueColor:
+                                                                  AlwaysStoppedAnimation<
+                                                                      Color>(
+                                                                Color(
+                                                                    0xFF818181),
+                                                              ),
+                                                            ),
+                                                          ),
+                                                        )
+                                                      : CustomPaint(
+                                                          painter:
+                                                              DiagonalLinePainter(
+                                                            dataPoints:
+                                                                _chartDataPoints,
+                                                          ),
+                                                        ),
                                                 ),
                                               ),
                                               const SizedBox(height: 5),
-                                              const Row(
+                                              Row(
                                                 mainAxisAlignment:
                                                     MainAxisAlignment
                                                         .spaceBetween,
                                                 children: [
-                                                  Text(
-                                                    "12.37",
-                                                    style: TextStyle(
-                                                        fontSize: 10,
-                                                        color:
-                                                            Color(0xFF818181)),
-                                                  ),
-                                                  Text("14.40",
-                                                      style: TextStyle(
-                                                          fontSize: 10,
-                                                          color: Color(
-                                                              0xFF818181))),
+                                                  _buildTimestampWidget(
+                                                      _chartFirstTimestamp),
+                                                  _buildTimestampWidget(
+                                                      _chartLastTimestamp),
                                                 ],
                                               )
                                             ],
                                           ),
                                         ),
                                         const SizedBox(width: 5),
-                                        const Column(
+                                        Column(
                                           mainAxisAlignment:
                                               MainAxisAlignment.spaceBetween,
                                           children: [
                                             Text(
-                                              "0.05678",
-                                              style: TextStyle(
+                                              _chartMaxPrice != null
+                                                  ? _formatPrice(
+                                                      _chartMaxPrice!)
+                                                  : "0.00000",
+                                              style: const TextStyle(
                                                   color: Color(0xFF818181),
                                                   fontSize: 10),
                                             ),
                                             Column(
                                               children: [
                                                 Text(
-                                                  "0.03678",
-                                                  style: TextStyle(
+                                                  _chartMinPrice != null
+                                                      ? _formatPrice(
+                                                          _chartMinPrice!)
+                                                      : "0.00000",
+                                                  style: const TextStyle(
                                                     color: Color(0xFF818181),
                                                     fontSize: 10,
                                                   ),
                                                 ),
-                                                SizedBox(
+                                                const SizedBox(
                                                   height: 15,
                                                 )
                                               ],
@@ -682,7 +1119,7 @@ class _HomePageState extends State<HomePage> {
                         Container(
                           width: double.infinity,
                           padding: const EdgeInsets.only(
-                              top: 15, bottom: 0, left: 15, right: 15),
+                              top: 15, bottom: 15, left: 15, right: 15),
                           child: Column(children: [
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -775,13 +1212,13 @@ class _HomePageState extends State<HomePage> {
                                 mainAxisAlignment:
                                     MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Text(r'$1',
+                                  Text('of 300.67 usdt on ton',
                                       style: TextStyle(
                                         fontWeight: FontWeight.w500,
                                         fontSize: 15,
                                         color: Color(0xFF818181),
                                       )),
-                                  Text('On TON',
+                                  Text(r'$1',
                                       style: TextStyle(
                                         fontWeight: FontWeight.w500,
                                         fontSize: 15,
@@ -803,7 +1240,7 @@ class _HomePageState extends State<HomePage> {
                         Container(
                           width: double.infinity,
                           padding: const EdgeInsets.only(
-                              top: 0, bottom: 0, left: 15, right: 15),
+                              top: 15, bottom: 0, left: 15, right: 15),
                           child: Column(children: [
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -896,13 +1333,13 @@ class _HomePageState extends State<HomePage> {
                                 mainAxisAlignment:
                                     MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Text(r'$1',
+                                  Text('now 11 ton on ton',
                                       style: TextStyle(
                                         fontWeight: FontWeight.w500,
                                         fontSize: 15,
                                         color: Color(0xFF818181),
                                       )),
-                                  Text('On TON',
+                                  Text(r'$1',
                                       style: TextStyle(
                                         fontWeight: FontWeight.w500,
                                         fontSize: 15,
