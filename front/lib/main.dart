@@ -189,6 +189,116 @@ class DiagonalLinePainter extends CustomPainter {
   }
 }
 
+// Helper class for Telegram WebApp BackButton
+class TelegramBackButton {
+  // Store callback references so offClick can properly remove them
+  static final Map<Function(), dynamic> _callbackMap = {};
+
+  static js.JsObject? _getBackButton() {
+    try {
+      final telegram = js.context['Telegram'];
+      if (telegram == null) return null;
+      final webApp = telegram['WebApp'];
+      if (webApp == null) return null;
+      final backButton = webApp['BackButton'];
+      return backButton as js.JsObject?;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  static void show() {
+    final backButton = _getBackButton();
+    if (backButton != null) {
+      try {
+        final show = backButton['show'];
+        if (show != null) {
+          show.apply([]);
+        }
+      } catch (e) {
+        // Silent fail
+      }
+    }
+  }
+
+  static void hide() {
+    final backButton = _getBackButton();
+    if (backButton != null) {
+      try {
+        final hide = backButton['hide'];
+        if (hide != null) {
+          hide.apply([]);
+        }
+      } catch (e) {
+        // Silent fail
+      }
+    }
+  }
+
+  static void onClick(Function() callback) {
+    try {
+      // First try using BackButton.onClick directly (recommended approach)
+      final backButton = _getBackButton();
+      if (backButton != null) {
+        final onClickMethod = backButton['onClick'];
+        if (onClickMethod != null) {
+          final jsCallback = js.allowInterop((dynamic _) {
+            callback();
+          });
+          _callbackMap[callback] = jsCallback;
+          try {
+            onClickMethod.apply([jsCallback]);
+            return;
+          } catch (e) {
+            // Fall through to WebApp.onEvent
+          }
+        }
+      }
+
+      // Fallback to WebApp.onEvent
+      final telegram = js.context['Telegram'];
+      if (telegram == null) return;
+      final webApp = telegram['WebApp'];
+      if (webApp == null) return;
+
+      if (webApp.hasProperty('onEvent')) {
+        final onEvent = webApp['onEvent'];
+        if (onEvent != null) {
+          final jsCallback = js.allowInterop((dynamic _) {
+            callback();
+          });
+          _callbackMap[callback] = jsCallback;
+          onEvent.apply(['backButtonClicked', jsCallback]);
+        }
+      }
+    } catch (e) {
+      print('Error setting up back button onClick: $e');
+    }
+  }
+
+  static void offClick(Function() callback) {
+    try {
+      final telegram = js.context['Telegram'];
+      if (telegram == null) return;
+      final webApp = telegram['WebApp'];
+      if (webApp == null) return;
+
+      final jsCallback = _callbackMap[callback];
+      if (jsCallback == null) return;
+
+      if (webApp.hasProperty('offEvent')) {
+        final offEvent = webApp['offEvent'];
+        if (offEvent != null) {
+          offEvent.apply(['backButtonClicked', jsCallback]);
+          _callbackMap.remove(callback);
+        }
+      }
+    } catch (e) {
+      print('Error removing back button onClick: $e');
+    }
+  }
+}
+
 void main() async {
   // Load .env file for local development
   try {
@@ -4725,6 +4835,31 @@ class TradePage extends StatefulWidget {
 }
 
 class _TradePageState extends State<TradePage> {
+  // Store the callback reference so we can remove it in dispose
+  void _handleBackButton() {
+    Navigator.of(context).pop();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // Show back button when swap page loads
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      TelegramBackButton.show();
+      // Set up back button click handler to return to main page
+      TelegramBackButton.onClick(_handleBackButton);
+    });
+  }
+
+  @override
+  void dispose() {
+    // Remove back button click handler when page is disposed
+    TelegramBackButton.offClick(_handleBackButton);
+    // Hide back button when leaving swap page
+    TelegramBackButton.hide();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
