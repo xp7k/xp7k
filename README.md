@@ -1,4 +1,4 @@
-![I TECHS IMBAL!!!!!!!!1111111](https://raw.githubusercontent.com/TECHSYMBAL/TECHSYMBALBOT/refs/heads/main/TECHSYMBAL%20(8).png)
+![Prospectus](https://raw.githubusercontent.com/TECHSYMBAL/bot/refs/heads/main/TECHSYMBAL_COVER.png)
 
 This is a monorepo containing multiple services.
 
