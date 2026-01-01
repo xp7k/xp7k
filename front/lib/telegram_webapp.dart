@@ -10,7 +10,9 @@ class TelegramWebApp {
   bool _isInitialized = false;
   js.JsObject? _webApp;
 
-  /// Check if Telegram WebApp is available
+  /// Check if Telegram WebApp is available (object exists)
+  /// Note: This returns true even in browser because the script is loaded
+  /// Use isActuallyInTelegram() for proper detection
   bool get isAvailable {
     try {
       final telegram = js.context['Telegram'];
@@ -18,6 +20,40 @@ class TelegramWebApp {
       final webApp = telegram['WebApp'];
       return webApp != null;
     } catch (e) {
+      return false;
+    }
+  }
+
+  /// Check if we're actually running in Telegram (not just that the script is loaded)
+  /// In browser: platform is "unknown" OR no user exists
+  /// In Telegram: platform is valid (ios/android/web/etc) AND user exists
+  bool get isActuallyInTelegram {
+    if (!isAvailable) {
+      print('[TelegramWebApp] isActuallyInTelegram: false (not available)');
+      return false;
+    }
+    
+    try {
+      final platformValue = platform;
+      final userValue = user;
+      final hasUser = userValue != null;
+      
+      // Most reliable check: In Telegram, there should be a user object with an ID
+      // Also check that platform is not "unknown"
+      // In browser: platform is "unknown" OR no user exists OR user has no ID
+      final hasValidUser = hasUser && 
+                          userValue.containsKey('id') &&
+                          userValue['id'] != null;
+      final isInTelegram = platformValue != null && 
+                          platformValue != 'unknown' && 
+                          hasValidUser;
+      
+      print('[TelegramWebApp] isActuallyInTelegram: platform="$platformValue", hasUser=$hasUser, hasValidUser=$hasValidUser, result=$isInTelegram');
+      
+      return isInTelegram;
+    } catch (e) {
+      // If we can't determine, assume browser (safer)
+      print('[TelegramWebApp] isActuallyInTelegram: error=$e, returning false (browser)');
       return false;
     }
   }

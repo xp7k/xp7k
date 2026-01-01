@@ -186,9 +186,27 @@
       }
       
       // Apply CSS sticky styles as additional protection
+      // Only try this if we're actually in Telegram (not in browser)
       try {
+        // Check if we're actually in Telegram by checking for valid launch params
+        if (!window.tmajs || !window.tmajs.sdk) {
+          throw new Error('TMA.js SDK not available');
+        }
+        
         var { retrieveLaunchParams, postEvent } = window.tmajs.sdk;
-        var lp = retrieveLaunchParams();
+        var lp;
+        
+        try {
+          lp = retrieveLaunchParams();
+        } catch (e) {
+          // If we can't retrieve launch params, we're probably in browser
+          throw new Error('Unable to retrieve launch parameters - not in Telegram');
+        }
+        
+        // Check if platform is valid (not 'unknown' which indicates browser)
+        if (!lp || !lp.platform || lp.platform === 'unknown') {
+          throw new Error('Invalid launch parameters - not in Telegram');
+        }
 
         // Some versions of Telegram don't need the sticky classes
         if (!['macos', 'tdesktop', 'weba', 'web', 'webk'].includes(lp.platform)) {

@@ -35,15 +35,7 @@ class AppTheme {
     
     // Check if we're actually running in Telegram (not just that the script is loaded)
     // The Telegram WebApp script is loaded in HTML, but we need to verify we're actually in Telegram
-    final platform = telegramWebApp.platform;
-    final initData = telegramWebApp.initData;
-    final hasValidInitData = initData != null && initData.isNotEmpty;
-    
-    // In browser: platform is explicitly "unknown" and initData is empty
-    // In Telegram: platform is valid (ios/android/web/etc) OR initData has content
-    // Strategy: Trust isAvailable, but exclude browser if platform is "unknown" AND no initData
-    final isDefinitelyBrowser = platform == 'unknown' && !hasValidInitData;
-    final isActuallyInTelegram = telegramWebApp.isAvailable && !isDefinitelyBrowser;
+    final isActuallyInTelegram = telegramWebApp.isActuallyInTelegram;
     
     if (isActuallyInTelegram) {
       // Use Telegram WebApp theme
@@ -101,54 +93,66 @@ class AppTheme {
       consoleLog('[AppTheme] Initializing browser theme detection...');
       // Use JavaScript to detect browser/system theme preference
       // Priority: browser prefers-color-scheme > system
-      final window = js.context['window'];
-      consoleLog('[AppTheme] Window available: ${window != null}');
-      
-      if (window != null) {
-        final matchMedia = window['matchMedia'];
-        consoleLog('[AppTheme] matchMedia available: ${matchMedia != null}');
-        if (matchMedia != null) {
-          consoleLog('[AppTheme] matchMedia type: ${matchMedia.runtimeType}');
+      try {
+        // Use a simpler approach: call window.matchMedia directly via JS
+        // Create a JS function that calls window.matchMedia
+        final matchMediaCode = '''
+          (function(query) {
+            if (typeof window !== 'undefined' && window.matchMedia) {
+              return window.matchMedia(query);
+            }
+            return null;
+          })
+        ''';
+        
+        final matchMediaFunc = js.context.callMethod('eval', [matchMediaCode]);
+        
+        if (matchMediaFunc == null || matchMediaFunc is! js.JsFunction) {
+          consoleLog('[AppTheme] matchMedia function not available, using default dark theme');
+          _colorSchemeNotifier.value = 'dark';
+          return;
         }
         
-        if (matchMedia is js.JsFunction) {
-          // Check for prefers-color-scheme media query
-          consoleLog('[AppTheme] Calling matchMedia for dark mode...');
-          final darkModeQuery = matchMedia.apply(['(prefers-color-scheme: dark)']);
-          consoleLog('[AppTheme] Dark mode query result: $darkModeQuery');
+        // Check for prefers-color-scheme media query
+        consoleLog('[AppTheme] Calling matchMedia for dark mode...');
+        final darkModeQuery = matchMediaFunc.apply(['(prefers-color-scheme: dark)']);
+        consoleLog('[AppTheme] Dark mode query result: $darkModeQuery');
+        
+        if (darkModeQuery == null || darkModeQuery is! js.JsObject) {
+          consoleLog('[AppTheme] Dark mode query failed, using default dark theme');
+          _colorSchemeNotifier.value = 'dark';
+          return;
+        }
+        
+        final isDark = darkModeQuery['matches'];
+        consoleLog('[AppTheme] Dark mode matches: $isDark');
+        
+        String detectedTheme;
+        if (isDark == true) {
+          detectedTheme = 'dark';
+        } else {
+          // Check light mode explicitly
+          consoleLog('[AppTheme] Calling matchMedia for light mode...');
+          final lightModeQuery = matchMediaFunc.apply(['(prefers-color-scheme: light)']);
+          consoleLog('[AppTheme] Light mode query result: $lightModeQuery');
           
-          if (darkModeQuery != null) {
-            final isDark = darkModeQuery['matches'];
-            consoleLog('[AppTheme] Dark mode matches: $isDark');
-            
-            String detectedTheme;
-            if (isDark == true) {
-              detectedTheme = 'dark';
-            } else {
-              // Check light mode explicitly
-              consoleLog('[AppTheme] Calling matchMedia for light mode...');
-              final lightModeQuery = matchMedia.apply(['(prefers-color-scheme: light)']);
-              consoleLog('[AppTheme] Light mode query result: $lightModeQuery');
-              
-              if (lightModeQuery != null && lightModeQuery['matches'] == true) {
-                detectedTheme = 'light';
-              } else {
-                // Default to dark if no preference
-                detectedTheme = 'dark';
-              }
-            }
-            
-            _colorSchemeNotifier.value = detectedTheme;
-            consoleLog('[AppTheme] ✓ Theme set to: $detectedTheme');
-            
-            // Listen for theme changes using addEventListener (modern approach)
-            if (darkModeQuery is js.JsObject) {
-              // Try addEventListener first (modern browsers)
-              final addEventListener = darkModeQuery['addEventListener'];
-              if (addEventListener is js.JsFunction) {
-                addEventListener.apply([
-                  'change',
-                  js.allowInterop((js.JsObject e) {
+          if (lightModeQuery != null && lightModeQuery is js.JsObject && lightModeQuery['matches'] == true) {
+            detectedTheme = 'light';
+          } else {
+            // Default to dark if no preference
+            detectedTheme = 'dark';
+          }
+        }
+        
+        _colorSchemeNotifier.value = detectedTheme;
+        consoleLog('[AppTheme] ✓ Theme set to: $detectedTheme');
+        
+        // Listen for theme changes using addEventListener (modern approach)
+        final addEventListener = darkModeQuery['addEventListener'];
+        if (addEventListener is js.JsFunction) {
+          addEventListener.apply([
+            'change',
+            js.allowInterop((js.JsObject e) {
                     final target = e['target'];
                     final isDark = target != null && target is js.JsObject
                         ? target['matches'] == true
@@ -158,39 +162,28 @@ class AppTheme {
                     _colorSchemeNotifier.value = newTheme;
                   })
                 ]);
-                consoleLog('[AppTheme] ✓ Theme change listener registered (addEventListener)');
-              } else {
-                // Fallback to addListener (older browsers)
-                final addListener = darkModeQuery['addListener'];
-                if (addListener is js.JsFunction) {
-                  addListener.apply([
-                    js.allowInterop((js.JsObject e) {
-                      final isDark = e['matches'] == true;
-                      final newTheme = isDark ? 'dark' : 'light';
-                      consoleLog('[AppTheme] 🔄 Browser theme changed to: $newTheme');
-                      _colorSchemeNotifier.value = newTheme;
-                    })
-                  ]);
-                  consoleLog('[AppTheme] ✓ Theme change listener registered (addListener)');
-                } else {
-                  consoleLog('[AppTheme] ⚠ Could not register theme change listener');
-                }
-              }
-            }
-          } else {
-            // Fallback: default to dark theme
-            _colorSchemeNotifier.value = 'dark';
-            consoleLog('[AppTheme] ⚠ Dark mode query is null, defaulting to dark');
-          }
+          consoleLog('[AppTheme] ✓ Theme change listener registered (addEventListener)');
         } else {
-          // Fallback: default to dark theme
-          _colorSchemeNotifier.value = 'dark';
-          consoleLog('[AppTheme] ⚠ matchMedia is not a function, defaulting to dark');
+          // Fallback to addListener (older browsers)
+          final addListener = darkModeQuery['addListener'];
+          if (addListener is js.JsFunction) {
+            addListener.apply([
+              js.allowInterop((js.JsObject e) {
+                final isDark = e['matches'] == true;
+                final newTheme = isDark ? 'dark' : 'light';
+                consoleLog('[AppTheme] 🔄 Browser theme changed to: $newTheme');
+                _colorSchemeNotifier.value = newTheme;
+              })
+            ]);
+            consoleLog('[AppTheme] ✓ Theme change listener registered (addListener)');
+          } else {
+            consoleLog('[AppTheme] ⚠ Could not register theme change listener');
+          }
         }
-      } else {
-        // Fallback: default to dark theme
+      } catch (e) {
+        // Fallback: default to dark theme on any error
         _colorSchemeNotifier.value = 'dark';
-        consoleLog('[AppTheme] ⚠ Window is not available, defaulting to dark');
+        consoleLog('[AppTheme] ⚠ Error initializing browser theme: $e, defaulting to dark');
       }
     } catch (e, stackTrace) {
       // Fallback: default to dark theme
@@ -209,7 +202,7 @@ class AppTheme {
   /// Manually refresh theme from Telegram WebApp or browser/system (useful for debugging or manual refresh)
   static void refreshTheme() {
     final telegramWebApp = TelegramWebApp();
-    if (telegramWebApp.isAvailable) {
+    if (telegramWebApp.isActuallyInTelegram) {
       final colorScheme = telegramWebApp.colorScheme;
       if (_colorSchemeNotifier.value != colorScheme) {
         print('Manually refreshing theme to: $colorScheme');
@@ -226,7 +219,7 @@ class AppTheme {
     final telegramWebApp = TelegramWebApp();
     
     // Priority 1: Telegram WebApp theme
-    if (telegramWebApp.isAvailable) {
+    if (telegramWebApp.isActuallyInTelegram) {
       final colorScheme = telegramWebApp.colorScheme;
       if (colorScheme != null) {
         return colorScheme;
@@ -1238,7 +1231,10 @@ class GlobalLogoBar extends StatefulWidget {
   static double getContentTopPadding() {
     // Check if we're in browser or TMA
     final telegramWebApp = TelegramWebApp();
-    final isInBrowser = !telegramWebApp.isAvailable;
+    final isInBrowser = !telegramWebApp.isActuallyInTelegram;
+    
+    // Debug logging
+    print('[GlobalLogoBar] getContentTopPadding - isAvailable: ${telegramWebApp.isAvailable}, isActuallyInTelegram: ${telegramWebApp.isActuallyInTelegram}, platform: ${telegramWebApp.platform}, initData: ${telegramWebApp.initData}');
     
     // In browser mode, logo is always visible, so content needs full padding
     if (isInBrowser) {
@@ -1270,7 +1266,7 @@ class GlobalLogoBar extends StatefulWidget {
     final telegramWebApp = TelegramWebApp();
     
     // If not in Telegram (browser), always show logo
-    if (!telegramWebApp.isAvailable) {
+    if (!telegramWebApp.isActuallyInTelegram) {
       return true; // Always show in browser
     }
     
@@ -1311,13 +1307,18 @@ class _GlobalLogoBarState extends State<GlobalLogoBar> with SingleTickerProvider
     
     // Check immediately if in browser (don't wait 1 second)
     final telegramWebApp = TelegramWebApp();
-    if (!telegramWebApp.isAvailable) {
+    if (!telegramWebApp.isActuallyInTelegram) {
       // In browser, ensure logo is visible and notifier is set immediately
-      _checkAndUpdateLogoVisibility();
+      GlobalLogoBar._fullscreenNotifier.value = true;
     } else {
-      // In TMA, check after 1 second
+      // In TMA, check fullscreen status immediately
+      final isFullscreen = telegramWebApp.isFullscreen;
+      final shouldShow = isFullscreen ?? true;
+      GlobalLogoBar._fullscreenNotifier.value = shouldShow;
+      
+      // Also check after 1 second (in case fullscreen status changes)
       _checkTimer = Timer(const Duration(seconds: 1), () {
-        _checkAndUpdateLogoVisibility();
+        _updateFullscreenStatus();
       });
     }
     
@@ -1331,54 +1332,26 @@ class _GlobalLogoBarState extends State<GlobalLogoBar> with SingleTickerProvider
     super.dispose();
   }
 
-  void _checkAndUpdateLogoVisibility() {
+  void _updateFullscreenStatus() {
     final telegramWebApp = TelegramWebApp();
-    
-    // If not in Telegram (browser), always show logo
-    if (!telegramWebApp.isAvailable) {
-      if (mounted) {
-        _animationController.forward(); // Ensure logo is visible
-        GlobalLogoBar._fullscreenNotifier.value = true;
-      }
+    if (!telegramWebApp.isActuallyInTelegram) {
+      GlobalLogoBar._fullscreenNotifier.value = true;
       return;
     }
     
-    // We're in Telegram - check isFullscreen
+    // Update fullscreen notifier directly based on isFullscreen
     final isFullscreen = telegramWebApp.isFullscreen;
-    
-    // Hide logo only if explicitly not fullscreen (isFullscreen == false)
-    // If isFullscreen is null, default to showing (safe fallback)
     final shouldShow = isFullscreen ?? true;
+    GlobalLogoBar._fullscreenNotifier.value = shouldShow;
     
     if (mounted) {
-      // Animate zoom out when hiding, zoom in when showing
-      if (shouldShow) {
-        // Show logo - ensure animation is at full scale (1.0)
-        // Always set to 1.0 to ensure visibility, even if already there
-        if (_animationController.value < 1.0) {
-          _animationController.forward(); // Zoom in (show)
-        } else {
-          // Force update to ensure visibility
-          _animationController.value = 1.0;
-        }
-      } else {
-        // Hide logo - zoom out to 0.0
-        if (_animationController.value > 0.0) {
-          _animationController.reverse(); // Zoom out (hide)
-        }
-      }
-      
-      GlobalLogoBar._fullscreenNotifier.value = shouldShow;
+      setState(() {}); // Force rebuild
     }
-  }
-
-  void _updateFullscreenStatus() {
-    _checkAndUpdateLogoVisibility();
   }
 
   void _setupViewportListener() {
     final telegramWebApp = TelegramWebApp();
-    if (telegramWebApp.isAvailable) {
+    if (telegramWebApp.isActuallyInTelegram) {
       telegramWebApp.onViewportChanged((data) {
         _updateFullscreenStatus();
       });
@@ -1390,62 +1363,95 @@ class _GlobalLogoBarState extends State<GlobalLogoBar> with SingleTickerProvider
     return ValueListenableBuilder<String?>(
       valueListenable: AppTheme.colorSchemeNotifier,
       builder: (context, colorScheme, _) {
-        return AnimatedBuilder(
-          animation: _scaleAnimation,
-          builder: (context, child) {
-            // Hide widget completely when scale is very small (near 0)
-            // This prevents the container from taking up space
-            if (_scaleAnimation.value < 0.01) {
+        // Check if we're in browser or TMA
+        final telegramWebApp = TelegramWebApp();
+        final isInBrowser = !telegramWebApp.isActuallyInTelegram;
+        
+        // In browser mode, always show logo without animation
+        if (isInBrowser) {
+          final logoBlockHeight = GlobalLogoBar.getLogoBlockHeight();
+          return Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: SafeArea(
+              top: false,
+              bottom: false,
+              child: Material(
+                color: AppTheme.backgroundColor,
+                child: Container(
+                  width: double.infinity,
+                  height: logoBlockHeight,
+                  padding: EdgeInsets.only(
+                      top: GlobalLogoBar._getLogoTopPadding(),
+                      bottom: 10,
+                      left: 15,
+                      right: 15),
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 600),
+                      child: SizedBox(
+                        width: 32,
+                        height: 32,
+                        child: SvgPicture.asset(
+                          AppTheme.isLightTheme
+                              ? 'assets/images/logo_light.svg'
+                              : 'assets/images/logo_dark.svg',
+                          width: 32,
+                          height: 32,
+                          key: const ValueKey('global_logo'),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        }
+        
+        // In TMA mode, check isFullscreen and show/hide logo directly without animation
+        // Use ValueListenableBuilder to react to fullscreen changes
+        return ValueListenableBuilder<bool>(
+          valueListenable: GlobalLogoBar.fullscreenNotifier,
+          builder: (context, shouldShowLogo, _) {
+            // Hide logo if not fullscreen
+            if (!shouldShowLogo) {
               return const SizedBox.shrink();
             }
             
-            // Check if we're in browser or TMA
-            final telegramWebApp = TelegramWebApp();
-            final isInBrowser = !telegramWebApp.isAvailable;
-            
-            // Calculate logo block height for browser mode
+            // Show logo directly in TMA fullscreen mode
             final logoBlockHeight = GlobalLogoBar.getLogoBlockHeight();
-            
             return Positioned(
               top: 0,
               left: 0,
               right: 0,
-              child: IgnorePointer(
-                ignoring: _scaleAnimation.value < 0.5,
-                child: SafeArea(
-                  top: false,
-                  bottom: false,
-                  child: Material(
-                    color: isInBrowser ? AppTheme.backgroundColor : Colors.transparent,
-                    child: Container(
-                      width: double.infinity,
-                      height: isInBrowser ? logoBlockHeight : null,
-                      padding: EdgeInsets.only(
-                          top: GlobalLogoBar._getLogoTopPadding(),
-                          bottom: 10,
-                          left: 15,
-                          right: 15),
-                      child: Center(
-                        child: ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 600),
-                          child: Transform.scale(
-                            scale: _scaleAnimation.value,
-                            alignment: Alignment.center,
-                            child: Opacity(
-                              opacity: _scaleAnimation.value.clamp(0.0, 1.0),
-                              child: SizedBox(
-                                width: 32,
-                                height: 32,
-                                child: SvgPicture.asset(
-                                  AppTheme.isLightTheme
-                                      ? 'assets/images/logo_light.svg'
-                                      : 'assets/images/logo_dark.svg',
-                                  width: 32,
-                                  height: 32,
-                                  key: const ValueKey('global_logo'),
-                                ),
-                              ),
-                            ),
+              child: SafeArea(
+                top: false,
+                bottom: false,
+                child: Material(
+                  color: Colors.transparent,
+                  child: Container(
+                    width: double.infinity,
+                    height: logoBlockHeight,
+                    padding: EdgeInsets.only(
+                        top: GlobalLogoBar._getLogoTopPadding(),
+                        bottom: 10,
+                        left: 15,
+                        right: 15),
+                    child: Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 600),
+                        child: SizedBox(
+                          width: 32,
+                          height: 32,
+                          child: SvgPicture.asset(
+                            AppTheme.isLightTheme
+                                ? 'assets/images/logo_light.svg'
+                                : 'assets/images/logo_dark.svg',
+                            width: 32,
+                            height: 32,
+                            key: const ValueKey('global_logo'),
                           ),
                         ),
                       ),
