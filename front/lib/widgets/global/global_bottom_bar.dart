@@ -48,18 +48,11 @@ class GlobalBottomBar extends StatefulWidget {
   // Static method to get the bottom bar height including padding and SafeArea
   // Container padding: top: 10, bottom: 15 (total 25px)
   // TextField minHeight: 30px
-  // SafeArea bottom padding is added by the caller using MediaQuery
+  // SafeArea bottom padding is NOT included - let Flutter handle it naturally
   static double getBottomBarHeight(BuildContext? context) {
     // Base height: container padding (10 + 15) + TextField minHeight (30)
-    double baseHeight = 10.0 + 30.0 + 15.0;
-    
-    // Add SafeArea bottom padding if context is available
-    if (context != null) {
-      final mediaQuery = MediaQuery.of(context);
-      baseHeight += mediaQuery.padding.bottom;
-    }
-    
-    return baseHeight;
+    // NO MediaQuery reads - let Flutter's layout system handle SafeArea naturally
+    return 10.0 + 30.0 + 15.0;
   }
 }
 
@@ -129,33 +122,28 @@ class _GlobalBottomBarState extends State<GlobalBottomBar> {
 
   @override
   Widget build(BuildContext context) {
-    // Get keyboard height from MediaQuery viewInsets
-    final mediaQuery = MediaQuery.of(context);
-    final keyboardHeight = mediaQuery.viewInsets.bottom;
-    
-    return Positioned(
-      bottom: keyboardHeight,
-      left: 0,
-      right: 0,
-      child: Material(
-        color: Colors.transparent,
-        child: Container(
-          width: double.infinity,
-          padding: const EdgeInsets.only(top: 10, bottom: 15),
-          child: SafeArea(
-            top: false,
-            child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 600),
-                child: Padding(
-                  padding: const EdgeInsets.only(left: 15, right: 15),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                Expanded(
-                  child: Container(
-                    constraints: const BoxConstraints(minHeight: 30),
-                    child: _controller.text.isEmpty
+    // NO MediaQuery reads - use Flutter's natural layout system
+    // This widget is now part of a Column, so it naturally moves up when keyboard opens
+    // The TextField inside will trigger keyboard, and Flutter's layout system handles the rest
+    return Material(
+      color: Colors.transparent,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.only(top: 10, bottom: 15),
+        child: SafeArea(
+          top: false,
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 600),
+              child: Padding(
+                padding: const EdgeInsets.only(left: 15, right: 15),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Expanded(
+                      child: Container(
+                        constraints: const BoxConstraints(minHeight: 30),
+                        child: _controller.text.isEmpty
                       ? SizedBox(
                           height: 30,
                           child: TextField(
@@ -261,26 +249,25 @@ class _GlobalBottomBarState extends State<GlobalBottomBar> {
                             ),
                           ),
                         ),
-                ),
-              ),
-              const SizedBox(width: 5),
-              Padding(
-                padding: const EdgeInsets.only(bottom: 7.5),
-                child: GestureDetector(
-                  onTap: () {
-                    _navigateToNewPage();
-                  },
-                  child: SvgPicture.asset(
-                    AppTheme.isLightTheme
-                        ? 'assets/icons/apply_light.svg'
-                        : 'assets/icons/apply_dark.svg',
-                    width: 15,
-                    height: 10,
-                  ),
-                ),
-              ),
-                    ],
-                  ),
+                      ),
+                    ),
+                    const SizedBox(width: 5),
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 7.5),
+                      child: GestureDetector(
+                        onTap: () {
+                          _navigateToNewPage();
+                        },
+                        child: SvgPicture.asset(
+                          AppTheme.isLightTheme
+                              ? 'assets/icons/apply_light.svg'
+                              : 'assets/icons/apply_dark.svg',
+                          width: 15,
+                          height: 10,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),

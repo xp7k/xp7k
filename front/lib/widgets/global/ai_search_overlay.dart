@@ -26,9 +26,8 @@ class _AiSearchOverlayState extends State<AiSearchOverlay> {
   bool _isFocused = false;
   bool _backButtonSetup = false;
   
-  // Cache heights to prevent recalculation when MediaQuery changes (keyboard opens)
+  // Cache logo height only - no MediaQuery reads, no keyboard height tracking
   double? _cachedLogoBarHeight;
-  double? _cachedBottomBarHeight;
   
   @override
   void initState() {
@@ -45,28 +44,15 @@ class _AiSearchOverlayState extends State<AiSearchOverlay> {
         ? GlobalLogoBar.getLogoBlockHeight()
         : 0.0;
   }
-  
-  void _cacheHeights(BuildContext context) {
-    // Cache heights only once to prevent recalculation when MediaQuery/safe area changes
-    // Logo height is already cached in initState, but ensure it's set
-    if (_cachedLogoBarHeight == null) {
-      _cachedLogoBarHeight = GlobalLogoBar.shouldShowLogo()
-          ? GlobalLogoBar.getLogoBlockHeight()
-          : 0.0;
-    }
-    // Cache bottom bar height on first build
-    // This should be stable regardless of keyboard state (only reads padding.bottom)
-    if (_cachedBottomBarHeight == null) {
-      _cachedBottomBarHeight = GlobalBottomBar.getBottomBarHeight(context);
-    }
-  }
 
   void _onFocusChanged() {
     final newFocusState = GlobalBottomBar.focusNotifier.value;
     
-    // Only react to actual changes
+    // Only react to actual changes - prevent unnecessary rebuilds
     if (newFocusState == _isFocused) return;
     
+    // Update state immediately - don't delay with post-frame callback
+    // Delaying causes flash because overlay appears, then state updates later
     setState(() {
       _isFocused = newFocusState;
     });
@@ -83,7 +69,7 @@ class _AiSearchOverlayState extends State<AiSearchOverlay> {
       _teardownBackButton();
     }
   }
-
+  
   void _setupBackButton() {
     if (_backButtonSetup) return; // Prevent multiple setups
     
@@ -150,82 +136,59 @@ class _AiSearchOverlayState extends State<AiSearchOverlay> {
 
   @override
   Widget build(BuildContext context) {
-    // Cache heights on first build to prevent recalculation when MediaQuery changes
-    _cacheHeights(context);
+    // NO MediaQuery reads - use Flutter's natural layout system
+    // This widget is now wrapped in Expanded, so it naturally compresses when keyboard opens
+    // The Column in app.dart ensures it fills available space between logo bar and bottom bar
     
-    // Use cached heights to prevent layout shifts when keyboard opens
-    // These values are calculated once and remain stable
-    final logoBarHeight = _cachedLogoBarHeight ?? 0.0;
-    final bottomBarHeight = _cachedBottomBarHeight ?? GlobalBottomBar.getBottomBarHeight(context);
-
-    // Always render the same widget structure to prevent tree changes
-    // Use Offstage to keep widget in tree but not render when not focused
-    return Positioned(
-      top: logoBarHeight,
-      left: 0,
-      right: 0,
-      bottom: bottomBarHeight,
-      child: Offstage(
-        offstage: !_isFocused,
-        child: IgnorePointer(
-          ignoring: !_isFocused,
-          child: GestureDetector(
-            onTap: _onOverlayTap,
-            behavior: HitTestBehavior.translucent,
-            child: Material(
+    // Overlay is visible only when focused
+    return Offstage(
+      offstage: !_isFocused,
+      child: IgnorePointer(
+        ignoring: !_isFocused,
+        child: GestureDetector(
+          onTap: _onOverlayTap,
+          behavior: HitTestBehavior.translucent,
+          child: Material(
+            color: AppTheme.backgroundColor,
+            child: Container(
+              width: double.infinity,
+              height: double.infinity,
               color: AppTheme.backgroundColor,
-              child: Container(
-                width: double.infinity,
-                height: double.infinity,
-                color: AppTheme.backgroundColor,
-                child: SafeArea(
-                  top: false,
-                  bottom: false,
-                  child: Stack(
-                    children: [
-                      // Premade input options centered - always in tree
-                      Center(
-                        child: Offstage(
-                          offstage: !_isFocused,
-                          child: ConstrainedBox(
-                            constraints: const BoxConstraints(maxWidth: 600),
-                            child: Padding(
-                              padding:
-                                  const EdgeInsets.symmetric(horizontal: 15),
-                              child: GestureDetector(
-                                onTap: () {},
-                                behavior: HitTestBehavior.opaque,
-                                child: Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  crossAxisAlignment: CrossAxisAlignment.center,
-                                  children: [
-                                    // Premade input options
-                                    ..._premadeOptions.map((option) => Padding(
-                                          padding:
-                                              const EdgeInsets.only(bottom: 20),
-                                          child: GestureDetector(
-                                            onTap: () => _onOptionTap(option),
-                                            behavior: HitTestBehavior.opaque,
-                                            child: Text(
-                                              option,
-                                              textAlign: TextAlign.center,
-                                              style: TextStyle(
-                                                fontFamily: 'Aeroport',
-                                                fontSize: 15,
-                                                fontWeight: FontWeight.w500,
-                                                color: AppTheme.textColor,
-                                              ),
-                                            ),
-                                          ),
-                                        )),
-                                  ],
+              // Center premade options - naturally adapts to available space
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 600),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 15),
+                    child: GestureDetector(
+                      onTap: () {},
+                      behavior: HitTestBehavior.opaque,
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // Premade input options
+                          ..._premadeOptions.map((option) => Padding(
+                                padding: const EdgeInsets.only(bottom: 20),
+                                child: GestureDetector(
+                                  onTap: () => _onOptionTap(option),
+                                  behavior: HitTestBehavior.opaque,
+                                  child: Text(
+                                    option,
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontFamily: 'Aeroport',
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w500,
+                                      color: AppTheme.textColor,
+                                    ),
+                                  ),
                                 ),
-                              ),
-                            ),
-                          ),
-                        ),
+                              )),
+                        ],
                       ),
-                    ],
+                    ),
                   ),
                 ),
               ),

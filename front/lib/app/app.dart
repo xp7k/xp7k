@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'theme/app_theme.dart';
 import '../utils/page_transitions.dart';
+import '../utils/keyboard_height_service.dart';
 import '../widgets/global/global_logo_bar.dart';
 import '../widgets/global/global_bottom_bar.dart';
 import '../widgets/global/ai_search_overlay.dart';
@@ -25,6 +26,9 @@ class _MyAppState extends State<MyApp> {
     super.initState();
     // Initialize theme from Telegram WebApp
     AppTheme.initialize();
+    
+    // Initialize keyboard height service (JavaScript-based, no MediaQuery)
+    KeyboardHeightService().initialize();
     
     // Initialize Vercel Analytics after first frame
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -53,20 +57,75 @@ class _MyAppState extends State<MyApp> {
           navigatorKey: MyApp.navigatorKey,
           navigatorObservers: [MyApp.routeObserver],
           builder: (context, child) {
-            return SizedBox.expand(
-              child: Container(
-                color: AppTheme.backgroundColor,
-                child: Overlay(
-                  initialEntries: [
-                    OverlayEntry(builder: (context) {
-                      return child ?? const SizedBox.shrink();
-                    }),
-                    OverlayEntry(builder: (context) => const GlobalLogoBar()),
-                    OverlayEntry(builder: (context) => const AiSearchOverlay()),
-                    OverlayEntry(
-                        builder: (context) => const GlobalBottomBar()),
-                  ],
-                ),
+            // Architecture: Independent overlays for top/bottom bars
+            // - Top bar (GlobalLogoBar): Positioned at top, can hide/show dynamically
+            // - Bottom bar (GlobalBottomBar): Positioned at bottom, moves with keyboard
+            // - Main content: Pages handle their own padding using helper methods
+            // 
+            // KEY FIX: resizeToAvoidBottomInset: false prevents Scaffold from resizing
+            // when keyboard opens. This stops page content from rebuilding/reloading.
+            // Instead, bottom bar positions itself using MediaQuery.viewInsets.bottom
+            // to detect keyboard height and move independently.
+            return Scaffold(
+              resizeToAvoidBottomInset: false, // CRITICAL: Prevents page reload on keyboard
+              backgroundColor: AppTheme.backgroundColor,
+              body: Stack(
+                children: [
+                  // Main content (pages) - base layer, NEVER rebuilds when keyboard opens
+                  // Pages use GlobalLogoBar.getContentTopPadding() for top spacing
+                  child ?? const SizedBox.shrink(),
+                  
+                  // Top bar overlay - independent positioning
+                  // Hides/shows in Telegram based on fullscreen mode
+                  const Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    child: GlobalLogoBar(),
+                  ),
+                  
+                  // Isolated MediaQuery detection widget
+                  // This widget rebuilds when keyboard opens/closes, but it's isolated
+                  // Only this widget rebuilds, not the Stack or page content
+                  // Updates KeyboardHeightService.heightNotifier when keyboard height changes
+                  _KeyboardHeightDetector(),
+                  
+                  // AI search overlay - positioned below logo bar
+                  // Uses keyboard height to center options in visible area
+                  // AnimatedPositioned for smooth transitions
+                  ValueListenableBuilder<double>(
+                    valueListenable: KeyboardHeightService().heightNotifier,
+                    builder: (context, keyboardHeight, child) {
+                      return AnimatedPositioned(
+                        duration: const Duration(milliseconds: 200),
+                        curve: Curves.easeOut,
+                        top: GlobalLogoBar.getLogoBlockHeight(),
+                        left: 0,
+                        right: 0,
+                        bottom: keyboardHeight, // Exclude keyboard area for proper centering
+                        child: child ?? const AiSearchOverlay(),
+                      );
+                    },
+                    child: const AiSearchOverlay(),
+                  ),
+                  
+                  // Bottom bar overlay - moves with keyboard smoothly
+                  // AnimatedPositioned for smooth transitions
+                  ValueListenableBuilder<double>(
+                    valueListenable: KeyboardHeightService().heightNotifier,
+                    builder: (context, keyboardHeight, child) {
+                      return AnimatedPositioned(
+                        duration: const Duration(milliseconds: 0),
+                        curve: Curves.easeOut,
+                        bottom: keyboardHeight,
+                        left: 0,
+                        right: 0,
+                        child: child ?? const GlobalBottomBar(),
+                      );
+                    },
+                    child: const GlobalBottomBar(),
+                  ),
+                ],
               ),
             );
           },
@@ -185,5 +244,42 @@ class _MyAppState extends State<MyApp> {
         );
       },
     );
+  }
+}
+
+/// Isolated widget that detects keyboard height using MediaQuery
+/// This widget rebuilds when keyboard opens/closes, but it's isolated from Stack
+/// Only this widget rebuilds, preventing page content from reloading
+/// Works on all platforms: native, browser, and TMA
+class _KeyboardHeightDetector extends StatefulWidget {
+  const _KeyboardHeightDetector();
+
+  @override
+  State<_KeyboardHeightDetector> createState() => _KeyboardHeightDetectorState();
+}
+
+class _KeyboardHeightDetectorState extends State<_KeyboardHeightDetector> {
+  double _lastHeight = 0.0;
+
+  @override
+  Widget build(BuildContext context) {
+    // Read MediaQuery - this causes THIS widget to rebuild when keyboard opens/closes
+    // But since it's isolated, the Stack doesn't rebuild
+    final keyboardHeight = MediaQuery.of(context).viewInsets.bottom;
+    
+    // Update service notifier only if value changed
+    // Using post-frame callback to avoid updating during build phase
+    if ((_lastHeight - keyboardHeight).abs() > 0.1) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _lastHeight = keyboardHeight;
+          KeyboardHeightService().heightNotifier.value = keyboardHeight;
+          print('[KeyboardHeightDetector] Keyboard height detected: ${keyboardHeight}px');
+        }
+      });
+    }
+    
+    // Return invisible widget - this widget rebuilds but has no visual impact
+    return const SizedBox.shrink();
   }
 }

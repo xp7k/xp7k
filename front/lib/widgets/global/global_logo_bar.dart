@@ -117,25 +117,25 @@ class _GlobalLogoBarState extends State<GlobalLogoBar> with SingleTickerProvider
       vsync: this,
     );
     
-    // Show logo by default, then check after 1 second
-    GlobalLogoBar._fullscreenNotifier.value = true;
-    _animationController.value = 1.0; // Start at full scale (visible)
-    
-    // Check immediately if in browser (don't wait 1 second)
+    // Determine initial logo visibility
     final telegramWebApp = TelegramWebApp();
+    
     if (!telegramWebApp.isActuallyInTelegram) {
-      // In browser, ensure logo is visible and notifier is set immediately
+      // In browser: Always show logo
       GlobalLogoBar._fullscreenNotifier.value = true;
+      _animationController.value = 1.0;
     } else {
-      // In TMA, check fullscreen status immediately
+      // In TMA: Check initial fullscreen status
       final isFullscreen = telegramWebApp.isFullscreen;
-      final shouldShow = isFullscreen ?? true;
+      final shouldShow = isFullscreen ?? true; // Default to true if null
       GlobalLogoBar._fullscreenNotifier.value = shouldShow;
+      _animationController.value = shouldShow ? 1.0 : 0.0;
       
-      // Removed 1-second timer check - it was causing unnecessary rebuilds
-      // The viewport listener will handle real fullscreen status changes
+      print('[GlobalLogoBar] Initial state: isFullscreen=$isFullscreen, shouldShow=$shouldShow');
     }
     
+    // Viewport listener disabled - logo visibility is now static during keyboard operations
+    // See _setupViewportListener() for details
     _setupViewportListener();
   }
 
@@ -146,43 +146,28 @@ class _GlobalLogoBarState extends State<GlobalLogoBar> with SingleTickerProvider
     super.dispose();
   }
 
-  void _updateFullscreenStatus() {
-    final telegramWebApp = TelegramWebApp();
-    if (!telegramWebApp.isActuallyInTelegram) {
-      // Only update if value actually changed
-      if (GlobalLogoBar._fullscreenNotifier.value != true) {
-        GlobalLogoBar._fullscreenNotifier.value = true;
-      }
-      return;
-    }
-    
-    // Update fullscreen notifier directly based on isFullscreen
-    final isFullscreen = telegramWebApp.isFullscreen;
-    final shouldShow = isFullscreen ?? true;
-    
-    // Only update notifier and rebuild if value actually changed
-    // This prevents unnecessary rebuilds when viewport changes due to keyboard
-    if (GlobalLogoBar._fullscreenNotifier.value != shouldShow) {
-      GlobalLogoBar._fullscreenNotifier.value = shouldShow;
-      
-      if (mounted) {
-        setState(() {}); // Force rebuild only when value actually changed
-      }
-    }
-  }
-
   void _setupViewportListener() {
-    final telegramWebApp = TelegramWebApp();
-    if (telegramWebApp.isActuallyInTelegram) {
-      telegramWebApp.onViewportChanged((data) {
-        // Debounce viewport changes to prevent rapid-fire updates
-        // This is especially important when keyboard opens/closes
-        _viewportDebounceTimer?.cancel();
-        _viewportDebounceTimer = Timer(const Duration(milliseconds: 300), () {
-          _updateFullscreenStatus();
-        });
-      });
-    }
+    // DISABLED: Viewport listener was causing logo to hide when keyboard opens
+    // because Telegram reports isFullscreen=false when viewport shrinks (keyboard opening).
+    // This is NOT the same as user pulling down the mini app to exit fullscreen.
+    // 
+    // With the new overlay architecture (Stack + Positioned), we don't need to
+    // react to viewport changes. Logo visibility is determined once at init based
+    // on initial fullscreen state, and stays fixed during keyboard operations.
+    //
+    // If needed in the future, we could distinguish between:
+    // - Keyboard viewport changes (viewportHeight < viewportStableHeight)
+    // - User fullscreen exit (actual isFullscreen property change)
+    
+    // final telegramWebApp = TelegramWebApp();
+    // if (telegramWebApp.isActuallyInTelegram) {
+    //   telegramWebApp.onViewportChanged((data) {
+    //     _viewportDebounceTimer?.cancel();
+    //     _viewportDebounceTimer = Timer(const Duration(milliseconds: 300), () {
+    //       _updateFullscreenStatus();
+    //     });
+    //   });
+    // }
   }
 
   @override
@@ -197,11 +182,54 @@ class _GlobalLogoBarState extends State<GlobalLogoBar> with SingleTickerProvider
         // In browser mode, always show logo without animation
         if (isInBrowser) {
           final logoBlockHeight = GlobalLogoBar.getLogoBlockHeight();
-          return Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: SafeArea(
+          return SafeArea(
+            top: false,
+            bottom: false,
+            child: Material(
+              color: Colors.transparent,
+              child: Container(
+                width: double.infinity,
+                height: logoBlockHeight,
+                padding: EdgeInsets.only(
+                    top: GlobalLogoBar._getLogoTopPadding(),
+                    bottom: 10,
+                    left: 15,
+                    right: 15),
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 600),
+                    child: SizedBox(
+                      width: 32,
+                      height: 32,
+                      child: SvgPicture.asset(
+                        AppTheme.isLightTheme
+                            ? 'assets/images/logo_light.svg'
+                            : 'assets/images/logo_dark.svg',
+                        width: 32,
+                        height: 32,
+                        key: const ValueKey('global_logo'),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        }
+        
+        // In TMA mode, check isFullscreen and show/hide logo directly without animation
+        // Use ValueListenableBuilder to react to fullscreen changes
+        return ValueListenableBuilder<bool>(
+          valueListenable: GlobalLogoBar.fullscreenNotifier,
+          builder: (context, shouldShowLogo, _) {
+            // Hide logo if not fullscreen
+            if (!shouldShowLogo) {
+              return const SizedBox.shrink();
+            }
+            
+            // Show logo directly in TMA fullscreen mode
+            final logoBlockHeight = GlobalLogoBar.getLogoBlockHeight();
+            return SafeArea(
               top: false,
               bottom: false,
               child: Material(
@@ -227,59 +255,6 @@ class _GlobalLogoBarState extends State<GlobalLogoBar> with SingleTickerProvider
                           width: 32,
                           height: 32,
                           key: const ValueKey('global_logo'),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          );
-        }
-        
-        // In TMA mode, check isFullscreen and show/hide logo directly without animation
-        // Use ValueListenableBuilder to react to fullscreen changes
-        return ValueListenableBuilder<bool>(
-          valueListenable: GlobalLogoBar.fullscreenNotifier,
-          builder: (context, shouldShowLogo, _) {
-            // Hide logo if not fullscreen
-            if (!shouldShowLogo) {
-              return const SizedBox.shrink();
-            }
-            
-            // Show logo directly in TMA fullscreen mode
-            final logoBlockHeight = GlobalLogoBar.getLogoBlockHeight();
-            return Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: SafeArea(
-                top: false,
-                bottom: false,
-                child: Material(
-                  color: Colors.transparent,
-                  child: Container(
-                    width: double.infinity,
-                    height: logoBlockHeight,
-                    padding: EdgeInsets.only(
-                        top: GlobalLogoBar._getLogoTopPadding(),
-                        bottom: 10,
-                        left: 15,
-                        right: 15),
-                    child: Center(
-                      child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 600),
-                        child: SizedBox(
-                          width: 32,
-                          height: 32,
-                          child: SvgPicture.asset(
-                            AppTheme.isLightTheme
-                                ? 'assets/images/logo_light.svg'
-                                : 'assets/images/logo_dark.svg',
-                            width: 32,
-                            height: 32,
-                            key: const ValueKey('global_logo'),
-                          ),
                         ),
                       ),
                     ),
